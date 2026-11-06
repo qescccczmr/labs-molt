@@ -7,8 +7,12 @@
 | 范围 | 执行 gates | 不得推导 |
 |---|---|---|
 | 推理内部一致性 | C0–C4 引擎部分、对应 C10 | trainer/backward/训练通过 |
-| 固定 rollout 的训练前向 | C0–C5 | C6–C9、有效更新、质量通过 |
-| 交付完整 aligned training | C0–C10；质量按约定覆盖 | 两次更新不代表收敛或长期稳定 |
+| 算子诊断、forward 实现与固定 rollout 前向 | C0–C5 | C6–C10、有效更新、质量通过 |
+| Backward 与 proxy RL | C5 通过后执行 C6–C8 | 完整模型 C9 或最终验收 C10 通过 |
+| Full model | 当前候选 C0–C8 证据齐备后执行 C9 | 最终验收 C10 通过 |
+| 最终验收与完整 aligned training 交付 | C10，复核 C0–C9 证据；质量按约定覆盖 | 两次更新不代表收敛或长期稳定 |
+
+完整交付的范围是 C0–C10。C8 结束只证明 proxy 的两次有效更新，不能标记为 full-model acceptance 完成。
 
 ## Gate table
 

@@ -13,9 +13,13 @@ description: Align XTuner v1 training with LMDeploy rollout at the per-token log
 
 | 任务 | 阅读顺序 |
 |---|---|
-| 新模型或实现 aligned forward | [集成入口](integration.md#source-map) → [比较对象](contracts.md#object-of-comparison) → [算子盘点](training-side.md#module-inventory) → [C0–C8](workflow.md#gate-table) |
+| 新模型的算子诊断或 aligned forward 实现 | [集成入口](integration.md#source-map) → [比较对象](contracts.md#object-of-comparison) → [scorer dtype](contracts.md#scorer-dtype-contract) → [算子盘点](training-side.md#module-inventory) → [C0–C5](workflow.md#gate-table) |
+| Backward 与 proxy RL | C5 通过后，[梯度验证](training-side.md#gradient-validation) → [C6–C8](workflow.md#gate-table) 和 [两次更新](workflow.md#two-step-rl) |
+| Full model | 当前候选 C0–C8 证据齐备后，[完整模型准入](workflow.md#entry-to-the-full-model) → [C9](workflow.md#gate-table) |
 | 已有任务出现 mismatch | [初筛](debugging.md#triage) → [隔离两侧](debugging.md#isolate-the-side) → [保存与比较](debugging.md#save-and-compare) |
-| 验收和提交 | [范围与配方](acceptance.md#one-recipe-two-arms) → [同步更新](integration.md#synchronous-run) → [两次更新](workflow.md#two-step-rl) → [证据](evidence.md) |
+| 最终验收和提交 | [范围与配方](acceptance.md#one-recipe-two-arms) → [同步更新](integration.md#synchronous-run) → [C10](workflow.md#gate-table) → [证据](evidence.md)；完整交付覆盖 C0–C10 |
+
+C8 通过只覆盖代理模型的更新链；full-model 验证属于 C9，最终验收属于 C10。
 
 ## Essential contracts
 
