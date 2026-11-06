@@ -60,6 +60,20 @@ old-logprob 的 capture 放在 `_collect_old_policy_snapshots` 的真实 `forwar
 
 若已有局部 BI 实现，记录开关到分支、实例、执行 kernel 和结果的调用链；仅搜到变量名不够。若没有，C0 的结果是待实现算子清单。
 
+## Request and response mapping
+
+XTuner `xtuner/v1/data_proto/rl_data.py::SampleParams` 默认 `return_logprob=True`、`top_logprobs=1`。token-id rollout 使用 LMDeploy `/generate`，其请求类型是 `GenerateReqInput`，不要混用 `/v1/chat/completions` 的字段约定。
+
+| XTuner 字段 | `/generate` 字段 | 当前 adapter 的边界 |
+|---|---|---|
+| `return_logprob` | `return_logprob` | 同名；请求与响应仍须证明有效分数存在 |
+| `top_logprobs` | **`top_logprobs_num`** | 已检查的 `_transform_sample_params` 只调用 `model_dump(exclude_none=True)`，没有执行这个改名 |
+| `max_tokens` | `max_tokens` | 同名；input scoring 的零值还受 [专门限制](#input-logprob-scoring) |
+
+当前 LMDeploy 在 `return_logprob=True` 且未指定 `top_logprobs_num` 时，以 `request.top_logprobs_num or 1` 选择默认数量。因此默认 sampled-token logprob 仍可返回，但不能把这当作参数映射正确的证据；将 XTuner `top_logprobs` 改为 5，并不保证服务收到 `top_logprobs_num=5` 或返回 5 个候选。
+
+在实际 HTTP payload 和响应中核对字段名、请求数量、返回的候选数及 token id；sampled-token 的分数和 top-k 候选集合分别检查。使用非默认 top-k 之前，确认该版本已正确映射，或把缺口交给独立 runtime PR。此问题不阻塞默认 sampled-token logprob 的比较，但未验证的 top-k 返回不能用于验收。
+
 ## Logprob semantics
 
 必须先选择并记录比较目标：
