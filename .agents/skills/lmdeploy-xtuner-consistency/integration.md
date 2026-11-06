@@ -11,7 +11,7 @@
 | 配置 schema | `xtuner/v1/rl/rollout/worker.py::RolloutConfig` | 在服务进程读取最终 engine config；不是每个字段都直接透传 |
 | 推理模型和算子 dispatch | 核对目标 XTuner model/module/ops 的实现 | `lmdeploy/pytorch/models/`、`nn/`、`backends/`、`kernels/` |
 | rollout 采样与 logprob | 检查 token-id 请求、响应解析和 SampleParams 转换 | `lmdeploy/pytorch/engine/logits_process.py::FusedLogitsProcessor` |
-| 固定 token 评分 | 按当前服务是否暴露输入评分接口核对 | `GenerationConfig.logprob_start_len`；`lmdeploy/pytorch/engine/model_agent/agent.py::_get_outputs_with_logprobs` |
+| 固定 token 评分 | 核对独立 scoring 请求的字段和响应，不假定普通 rollout 配置直接支持 | `GenerateReqInput`、`lmdeploy/serve/openai/endpoints/generate.py::check_request`；`lmdeploy/pytorch/engine/model_agent/agent.py::_get_outputs_with_logprobs` |
 | old-logprob 前向 | `xtuner/v1/rl/trainer/actor_worker.py::ActorWorker._collect_old_policy_snapshots` → `TrainEngine.forward_only` | 对比同权重 rollout 张量 |
 | old-logprob head/scorer | `xtuner/v1/loss/rl_loss.py::LogProbContext` 的普通和 chunk 路径 | 与 engine head、log-softmax 的实际输入和 dtype 比较 |
 | 带梯度训练 head/scorer | `ActorWorker._fit_policy_then_sft`、`_build_step_input` → 继承的 `RoleWorker._train_update` → 当前 loss，如 `xtuner/v1/rl/loss/grpo_loss.py` | 注意 loss 内部直接 `F.linear`，仅替换模型 `nn.Linear` 可能漏掉 lm_head |
@@ -75,7 +75,23 @@ old-logprob 的 capture 放在 `_collect_old_policy_snapshots` 的真实 `forwar
 
 如果当前 engine 不返回所需分布的 logprob，将该能力标记 `missing`，实现对应 capture/scorer 后再验收。不要用 raw 值替代，也不要从不同处理阶段的值倒推后宣称 bitwise。
 
-输入评分接口在较新 checkout 中可见 `logprob_start_len`，须核对当前分支、API 暴露、`max_new_tokens=0` 的支持及 chunk 边界。固定历史评分通过不等于在线 decode 通过；cache 命中时还要证明每个被比较位置都有真实分数。
+## Input logprob scoring
+
+`/generate` 的请求 schema 是 `lmdeploy/serve/openai/protocol.py::GenerateReqInput`；限制由 `lmdeploy/serve/openai/endpoints/generate.py::check_request` 及后续 input preparation 检查。启用 input scoring 时须同时满足：
+
+| 条件 | 请求/引擎要求 |
+|---|---|
+| Request field | `logprob_start_len`；`-1` 表示关闭 input scoring，评分时取合法非负起点 |
+| Request token budget | **`max_tokens=0`**；请求层不使用 `max_new_tokens`，后者属于内部 `GenerationConfig` |
+| Logprob 请求 | `return_logprob=True` |
+| Engine | `PytorchEngineConfig` 且 `role=EngineRole.Hybrid`；不推广到 TurboMind 或其他 role |
+| Speculative decoding | 不支持；服务的 speculative config 必须未启用 |
+| Score mode | 引擎 `logprobs_mode` 为 `raw_logits` 或 `raw_logprobs` |
+| 起点与输入 | 输入非空，准备后的 `input_len` 满足 `0 ≤ logprob_start_len < input_len`；另检查目标 token 范围确有有效分数 |
+
+`raw_logits` 虽被 API 接受，返回的是未做 log-softmax 的评分值，不能当作 logprob 验收；比较 logprob 时明确选择 `raw_logprobs` 和对应 [scorer dtype contract](contracts.md#scorer-dtype-contract)。关闭 input scoring 时，请求 `max_tokens=0` 也不合法，不能把它当作通用的零生成参数。
+
+跟踪 `ModelAgent._get_outputs_with_logprobs`，验证 chunked prefill 边界与 prefix-cache hit/miss 下目标 token 集合、位置和分数完整性。固定历史评分通过不等于在线 decode 通过；缺少某个位置的分数时不能用默认值补齐为通过。
 
 ## Metrics and capture
 
