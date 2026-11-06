@@ -15,8 +15,8 @@
 
 C5 对同一 θ、tokens 和 mask，分别捕获：
 
-- **路径 a：old-logprob/forward-only**，XTuner `TrainingWorker.compute_actor_logprobs` → `LogProbContext`；记录实际 model/grad mode，不为了测试强行开启 autograd。
-- **路径 b：loss 使用的 grad-enabled forward**，在当前 RL loss 真正使用的 logprob 处 capture；覆盖 direct head、chunk 模式、packing、SP 和 activation recompute。
+- **路径 a：old-logprob/forward-only**，`xtuner/v1/rl/trainer/actor_worker.py::ActorWorker._collect_old_policy_snapshots` → `TrainEngine.forward_only(seq_ctx, loss_ctx=read_ctx)["loss"]` → `LogProbContext`；入口由 `TrainingWorker.actor_fit` 委托给 `ActorWorker.fit`。记录实际 model/grad mode，不为了测试强行开启 autograd。
+- **路径 b：loss 使用的 grad-enabled forward**，`ActorWorker.fit` → `_fit_policy_then_sft` → `_build_step_input` → 继承的 `RoleWorker._train_update` → 当前 RL loss。在 loss 真正使用的 logprob 处 capture；覆盖 direct head、chunk 模式、packing、SP 和 activation recompute。完整源码导航见 [training call paths](integration.md#training-call-paths)。
 
 每条路径记录：实例 class 与源码、grad/mode、kernel 命中、dtype、概率语义、完整 token 集合和 valid/mismatch/nonfinite。某配置跳过 a 时标 `not run`，可按授权在 proxy 上单独运行；a 的通过不替代 b。b 的 forward 通过不替代 C6–C7。
 

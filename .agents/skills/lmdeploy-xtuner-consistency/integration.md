@@ -12,11 +12,11 @@
 | 推理模型和算子 dispatch | 核对目标 XTuner model/module/ops 的实现 | `lmdeploy/pytorch/models/`、`nn/`、`backends/`、`kernels/` |
 | rollout 采样与 logprob | 检查 token-id 请求、响应解析和 SampleParams 转换 | `lmdeploy/pytorch/engine/logits_process.py::FusedLogitsProcessor` |
 | 固定 token 评分 | 按当前服务是否暴露输入评分接口核对 | `GenerationConfig.logprob_start_len`；`lmdeploy/pytorch/engine/model_agent/agent.py::_get_outputs_with_logprobs` |
-| old-logprob 前向 | `xtuner/v1/rl/trainer/worker.py::TrainingWorker.compute_actor_logprobs` → engine `forward_only` | 对比同权重 rollout 张量 |
+| old-logprob 前向 | `xtuner/v1/rl/trainer/actor_worker.py::ActorWorker._collect_old_policy_snapshots` → `TrainEngine.forward_only` | 对比同权重 rollout 张量 |
 | old-logprob head/scorer | `xtuner/v1/loss/rl_loss.py::LogProbContext` 的普通和 chunk 路径 | 与 engine head、log-softmax 的实际输入和 dtype 比较 |
-| 带梯度训练 head/scorer | 当前 loss，如 `xtuner/v1/rl/loss/grpo_loss.py` | 注意 loss 内部直接 `F.linear`，仅替换模型 `nn.Linear` 可能漏掉 lm_head |
+| 带梯度训练 head/scorer | `ActorWorker._fit_policy_then_sft`、`_build_step_input` → 继承的 `RoleWorker._train_update` → 当前 loss，如 `xtuner/v1/rl/loss/grpo_loss.py` | 注意 loss 内部直接 `F.linear`，仅替换模型 `nn.Linear` 可能漏掉 lm_head |
 | 训练 log-softmax | `xtuner/v1/rl/utils/misc.py::gather_logprobs` | engine scorer 的归约和 cast 位置 |
-| 现有误差指标 | `xtuner/v1/rl/rollout_is.py::compute_mismatch_metrics` → trainer worker → `xtuner/v1/train/rl_trainer.py` | 核对真实日志 key 和覆盖的路径；目前不能假定已有 bitwise 指标 |
+| 现有误差指标 | `xtuner/v1/rl/rollout_is.py::compute_mismatch_metrics` → `ActorWorker._collect_old_policy_snapshots` → `xtuner/v1/train/rl_trainer.py` | 核对真实日志 key 和覆盖的路径；目前不能假定已有 bitwise 指标 |
 | 权重导出 | `xtuner/v1/rl/weight_update/weight_iterator.py::WeightIterator` | load 后的参数、scale、布局与派生 buffer |
 | 权重传输 | `xtuner/v1/rl/weight_update/update_weighter.py::WeightUpdater`、同目录 `transport.py` | `lmdeploy/pytorch/engine/engine.py`、同目录 `model_agent/agent.py` 的更新和 post-load 生命周期 |
 | 真实训练循环 | `xtuner/v1/train/rl_trainer.py`，用户现有 recipe | 同步、版本、暂停/恢复 rollout 的实际时序 |
@@ -24,6 +24,31 @@
 在 trainer、rollout Ray actor 和实际 engine worker 内分别记录：模块 `__file__`、版本、源码 SHA/dirty diff、扩展/JIT hash、torch/CUDA、GPU sm、resolved config、环境覆盖。驱动进程的 import 路径不代表 worker 的路径。
 
 官方入口：[LMDeploy pipeline API](https://lmdeploy.readthedocs.io/en/stable/api/pipeline.html)、[XTuner GRPO Python 配方](https://xtuner.readthedocs.io/en/latest/rl/tutorial/rl_grpo_trainer.html)。具体行为以执行版本源码和 receipt 为准。
+
+## Training call paths
+
+当前调用链已对照 [ActorWorker](https://github.com/InternLM/xtuner/blob/c93eb15dc0b1e4fd371b33d79bec9e1321fe20f2/xtuner/v1/rl/trainer/actor_worker.py)、[TrainingWorker](https://github.com/InternLM/xtuner/blob/c93eb15dc0b1e4fd371b33d79bec9e1321fe20f2/xtuner/v1/rl/trainer/worker.py) 和 [RoleWorker](https://github.com/InternLM/xtuner/blob/c93eb15dc0b1e4fd371b33d79bec9e1321fe20f2/xtuner/v1/rl/trainer/role_worker.py) 的源码快照；使用其他 revision 时重新核对实际实例和委托关系。
+
+```text
+old-logprob：
+TrainingWorker.actor_fit()                         # trainer/worker.py
+  → ActorWorker.fit()                              # trainer/actor_worker.py
+  → ActorWorker._collect_old_policy_snapshots()
+  → TrainEngine.forward_only(seq_ctx, loss_ctx=read_ctx)["loss"]
+  → LogProbContext 普通/chunk 路径
+  → F.linear(...).float() → gather_logprobs
+
+带梯度的 policy update：
+TrainingWorker.actor_fit() → ActorWorker.fit()
+  → ActorWorker._fit_policy_then_sft()
+  → ActorWorker._build_step_input()                 # 组装 loss context 与 items
+  → RoleWorker._train_update(items)                 # ActorWorker 继承的方法
+  → TrainEngine.train_step()
+  → GRPOLossContext（按实际配方的 loss 类型核对）
+  → F.linear(...) → .float() → gather_logprobs → policy loss
+```
+
+old-logprob 的 capture 放在 `_collect_old_policy_snapshots` 的真实 `forward_only` 输出，训练路径的 capture 放在 loss 使用的 logprob 上。snapshot 被保存或绑定到训练输入不代表训练 scorer 已被验证；C5 分开检查两条路径。
 
 ## Config boundaries
 
