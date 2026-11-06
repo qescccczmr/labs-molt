@@ -20,6 +20,8 @@ XTuner 保留自己的参数容器、FSDP/mesh、优化器、模型入口和 Seq
 
 特别检查 XTuner 的 head：`LogProbContext` 普通/chunk 模式和 GRPO 等 loss 会直接调用 `F.linear(hidden, head_weight, bias)`。只 patch `nn.Linear` 可能不覆盖这些调用点；C5 要分别证明它们执行了候选 head 和 scorer。
 
+按 [scorer dtype contract](contracts.md#scorer-dtype-contract) 分别核对 training/rollout 的 `fp32_lm_head=False` 与 `True`，保存 head 原始输出、cast 后的 log-softmax 输入及 selected logprob；两侧最后都得到 FP32 张量不能替代这些边界的证据。
+
 若当前 LMDeploy backend 没有可复用的稳定 op，先列接口缺口和最小改动，再实现；不得用近似 torch 重写声称已调用相同内核。TurboMind 路径必须先证明绑定可用。
 
 ## Layout, state and parallelism

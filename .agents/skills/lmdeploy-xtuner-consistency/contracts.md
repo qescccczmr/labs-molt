@@ -27,6 +27,40 @@
 
 batch invariance、prefill/decode parity、跨进程稳定和跨并行布局稳定是不同性质，分别验证。kernel 能复用仍可能需要固定 dispatch 或修改 reduction；不假定 LMDeploy 默认已满足这些性质。
 
+## Scorer dtype contract
+
+LM head 与 log-softmax 是独立的数值边界，不能只检查最终 selected-token logprob 的 dtype。每条真实路径分别记录：
+
+| 检查项 | 必须记录的内容 |
+|---|---|
+| 1. Training LM head weight dtype | XTuner forward 实际读取的 head 参数；区分存储值与 FSDP compute copy |
+| 2. Rollout LM head weight dtype | LMDeploy load/post-load 后实际读取的 head 参数；不由训练配置推断 |
+| 3. Hidden state dtype before head | 两侧进入 head 前的 dtype，以及 head 入口 cast 后实际送入 GEMM 的 dtype |
+| 4. GEMM accumulation dtype | 实际 kernel 的乘法/累加精度、reduction、epilogue 与舍入点；输出 FP32 不证明 GEMM 全程 FP32 |
+| 5. Logits output dtype | head 原始输出及其 bytes，记录任何后续 `.float()`、cast 或 buffer 写回 |
+| 6. LogSoftmax computation dtype | 实际输入、内部计算/归约精度和输出 dtype；BF16 接口不代表内部累加一定为 BF16 |
+| 7. Final selected-token logprob dtype | gather 后、传输/序列化前、训练 capture 处的 dtype 与 bytes；单独记录传输中的转换 |
+
+已检查的 LMDeploy `lmdeploy/pytorch/models/utils/model.py::DeployModelMixinV1.get_logits` 先将 hidden states 转为 `lm_head.weight.dtype` 再调用 head；`FusedLogitsProcessor` 的 `raw_logprobs` 分支直接执行 `scores.log_softmax(dim=-1)`，没有显式 `.float()`。XTuner 的 `LogProbContext` 普通/chunk 路径和 `GRPOLossContext` 在 `F.linear` 后显式将 logits 转为 FP32，再调用 `gather_logprobs`。
+
+因此，当 head 输出为 BF16 且引擎中间没有其他 upcast 时，两侧进入 log-softmax 的值域/dtype 路径分别是 BF16 与 FP32，不能直接声称原 dtype bitwise 相同。即使序列化或 capture 最后将两者都转成 FP32，也不能恢复已在 BF16 log-softmax 输出中丢失的位。`ModelAgent` 的 input scoring 与在线 sampling 路径均须追踪，不能只检查其中一个。
+
+两个配置相互独立，默认均为 `False`：
+
+- Training：`xtuner/v1/config/fsdp.py::FSDPConfig.fp32_lm_head`。
+- Rollout：`xtuner/v1/rl/rollout/worker.py::RolloutConfig.fp32_lm_head`；LMDeploy adapter 将其传入 `hf_overrides`，再影响 head 构造。
+
+后续 runtime 验证至少分别覆盖以下两组；每组独立保存上述七项和 C5 双路径证据：
+
+| Training / Rollout 配置 | 检查重点 | 未经实验不能推导 |
+|---|---|---|
+| `False / False` | 实际 head dtype、BF16 head 输出、两侧 log-softmax 输入和输出；不要把默认配置当作已对齐 | head 均为 BF16不意味着 scorer 相同 |
+| `True / True` | 两侧 head 参数和输入 cast 是否真正为 FP32，kernel/归约与 scorer 是否一致 | 两个 flag 为 True 不保证 bitwise |
+
+若两侧配置不一致，先记录它们实际产生的数值路径，不用一个 flag 代替另一个。选择统一 FP32 或其他共同路径前，先在同一 captured logits 上比较 scorer，再比较真实 head 输出及完整路径；将选择、代价与证据冻结进配方，不为通过检查而静默更改用户精度。
+
+本表定义待执行的验证范围；文档修改本身不表示已运行这两组 GPU 实验。
+
 ## Discrete decisions
 
 优先比较离散状态，再分析最后一位误差：专家 id 和 slot 顺序、DSA/稀疏索引、top-p/top-k 保留集合、约束解码 mask、capacity/padding 决策。

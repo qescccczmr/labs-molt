@@ -20,6 +20,8 @@ C5 对同一 θ、tokens 和 mask，分别捕获：
 
 每条路径记录：实例 class 与源码、grad/mode、kernel 命中、dtype、概率语义、完整 token 集合和 valid/mismatch/nonfinite。某配置跳过 a 时标 `not run`，可按授权在 proxy 上单独运行；a 的通过不替代 b。b 的 forward 通过不替代 C6–C7。
 
+两条路径各自附上 [scorer 的七项 dtype 记录](contracts.md#scorer-dtype-contract)，包括独立的 training/rollout `fp32_lm_head` 配置、head 原始输出和 log-softmax 输入。最终 logprob 被共同 cast 为 FP32，不能证明此前 scorer 的数值路径相同。
+
 ## Candidate ledger
 
 每个结果绑定一个执行范围：

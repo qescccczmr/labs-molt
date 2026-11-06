@@ -44,7 +44,7 @@
 | raw forward parity | 原始模型 logits 的 log-softmax 中该 token 的值 | 两栈对该历史的原始模型评分相同 |
 | sampling-policy parity | 真实采样处理后的分布对该 token 的 logprob | 训练使用的概率与采样行为策略一致；还需同步和更新条件 |
 
-在已检查的 `FusedLogitsProcessor.__call__` 中，`raw_logprobs` 在 temperature、repetition penalty、guided/bad/stop mask 等处理前计算；后续还有采样过滤。XTuner 的 `gather_logprobs` 对 logits 做 `F.log_softmax`，已检查的 GRPO head 不在此处除以 rollout temperature。这能构成 raw 值的候选配对，不能直接声称 true on-policy。
+在已检查的 `FusedLogitsProcessor.__call__` 中，`raw_logprobs` 在 temperature、repetition penalty、guided/bad/stop mask 等处理前计算；后续还有采样过滤。XTuner 的 `gather_logprobs` 对 logits 做 `F.log_softmax`，已检查的 GRPO head 不在此处除以 rollout temperature。这只是 raw 概率语义的候选配对：LMDeploy 直接对 `scores` 做 log-softmax，XTuner 则在 head 后 `.float()`；还须满足 [scorer dtype contract](contracts.md#scorer-dtype-contract)，不能直接声称 raw bytes 相同或 true on-policy。
 
 若用户要求 sampling-policy parity：保存实际 temperature、top-p/top-k/min-p、penalty、min-new-token/EOS mask、约束解码和归一化规则，并比较处理后的同一个分布。即使 temperature=1，其他过滤仍可能改变概率。关闭这些处理只适用于用户同意的诊断或冻结配方，不能偷偷改变正式任务。
 
